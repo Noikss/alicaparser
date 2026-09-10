@@ -38,7 +38,7 @@ from telethon.errors import (
 # НАСТРОЙКИ
 # ==========================================
 
-BOT_TOKEN = "8730555122:AAG9eBrNOjpvGIoDkoYZLhE9bRIRqPiIEsg"
+BOT_TOKEN = "8730555122:AAE-VtpEK0HrJceNTZGpBFhmrMSzCDAqVKs"
 
 API_ID = 37443553
 API_HASH = "a9a89f77413936f88b395a27ff956102"
