@@ -24,13 +24,6 @@ from aiogram.filters import CommandStart, Command
 
 import qrcode
 
-# Локально удобно держать секреты в .env; на хостинге их задают через панель.
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
 from telethon import TelegramClient
 from telethon.tl.types import User
 from telethon.tl.functions.users import GetFullUserRequest
@@ -45,26 +38,15 @@ from telethon.errors import (
 # НАСТРОЙКИ
 # ==========================================
 
-# Секреты берутся из переменных окружения — в код их не вписываем,
-# иначе они утекут вместе с репозиторием.
-# Локально можно положить их в файл .env (см. .env.example).
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-API_ID = int(os.getenv("API_ID", "0") or 0)
-API_HASH = os.getenv("API_HASH", "")
+BOT_TOKEN = "8730555122:AAG9eBrNOjpvGIoDkoYZLhE9bRIRqPiIEsg"
 
-if not BOT_TOKEN or not API_ID or not API_HASH:
-    raise SystemExit(
-        "Не заданы BOT_TOKEN / API_ID / API_HASH.\n"
-        "Локально: создай файл .env по образцу .env.example.\n"
-        "На хостинге: пропиши их в разделе переменных окружения."
-    )
+API_ID = 37443553
+API_HASH = "a9a89f77413936f88b395a27ff956102"
 
 POSTS_LIMIT = 0  # 0 = без лимита, парсим весь канал от первого до последнего поста
 
-# Пути можно переопределить через переменные окружения (на хостинге бывает
-# нужен другой каталог, например постоянный диск)
-SESSIONS_DIR = os.getenv("SESSIONS_DIR", "sessions")
-OUTPUT_DIR = os.getenv("OUTPUT_DIR", "outputs")
+SESSIONS_DIR = "sessions"
+OUTPUT_DIR = "outputs"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
