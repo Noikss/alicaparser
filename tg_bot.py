@@ -29,7 +29,7 @@ from telethon.tl.types import User
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import CheckChatInviteRequest
-from telethon.tl.types import ChatInviteAlready, PeerChannel
+from telethon.tl.types import ChatInviteAlready, PeerChannel, Chat
 from telethon.errors import (
     FloodWaitError, ChannelPrivateError,
     ChatAdminRequiredError, SessionPasswordNeededError,
@@ -351,7 +351,7 @@ def make_row(user, channel_username, post_id, comment, bio=None):
         "ID сообщения":                   comment.id,
         "Ссылка на комментарий":          (
             f"https://t.me/{channel_username}/{post_id}?comment={comment.id}"
-            if post_id else f"https://t.me/{channel_username}"
+            if post_id else f"https://t.me/{channel_username}/{comment.id}"
         ),
     }
 
@@ -556,13 +556,16 @@ async def parse_channel(client, channel_username, status_msg: Message):
         return rows
 
     # ---- Быстрый путь: читаем группу обсуждений целиком ----
-    if FAST_MODE:
-        group = await get_discussion_group(client, channel)
+    # Если по ссылке — сам чат/группа (а не канал с комментариями), читаем его сообщения напрямую
+    is_group = bool(getattr(channel, "megagroup", False)) or isinstance(channel, Chat)
+
+    if is_group or FAST_MODE:
+        group = channel if is_group else await get_discussion_group(client, channel)
         if group is not None:
             interrupted = await parse_via_group(
                 client, channel_username, channel, group, status_msg, people, seen_msg
             )
-            if interrupted and not people:
+            if interrupted and not people and not is_group:
                 # группа обсуждений недоступна (например, закрытая и аккаунт в ней не состоит) —
                 # пробуем медленный способ через сам канал
                 logger.info(
