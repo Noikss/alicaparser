@@ -28,6 +28,8 @@ from telethon import TelegramClient
 from telethon.tl.types import User
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.messages import CheckChatInviteRequest
+from telethon.tl.types import ChatInviteAlready, PeerChannel
 from telethon.errors import (
     FloodWaitError, ChannelPrivateError,
     ChatAdminRequiredError, SessionPasswordNeededError,
@@ -486,6 +488,48 @@ async def parse_via_group(client, channel_username, channel, group, status_msg,
     return interrupted
 
 
+async def resolve_channel(client, ref: str):
+    """Возвращает (entity, name).
+    name — то, что кладём в таблицу и ссылки: юзернейм, либо 'c/<id>' для закрытых каналов.
+    Поддерживает: @username, инвайт-ссылку (если аккаунт уже вступил в канал),
+    ссылку вида t.me/c/<id>."""
+
+    # --- инвайт-ссылка: t.me/+hash ---
+    if ref.startswith("+"):
+        invite_hash = ref[1:]
+        res = await client(CheckChatInviteRequest(invite_hash))
+        if isinstance(res, ChatInviteAlready):
+            chat = res.chat
+            name = getattr(chat, "username", None) or f"c/{chat.id}"
+            return chat, name
+        # ChatInvite / ChatInvitePeek — аккаунт в канале не состоит
+        title = getattr(res, "title", "") or ref
+        raise PermissionError(
+            f"аккаунт не вступил в закрытый канал «{title}» — вступи в него "
+            f"с этого аккаунта и отправь файл ещё раз"
+        )
+
+    # --- t.me/c/<id> ---
+    if ref.startswith("c/"):
+        chan_id = int(ref.split("/")[1])
+        try:
+            entity = await client.get_entity(PeerChannel(chan_id))
+        except ValueError:
+            # сущности нет в кеше сессии — подгружаем список диалогов и пробуем снова
+            await client.get_dialogs()
+            try:
+                entity = await client.get_entity(PeerChannel(chan_id))
+            except ValueError:
+                raise PermissionError(
+                    "аккаунт не состоит в этом закрытом канале (или ссылка неверная)"
+                )
+        return entity, getattr(entity, "username", None) or f"c/{entity.id}"
+
+    # --- обычный публичный юзернейм ---
+    entity = await client.get_entity(ref)
+    return entity, ref
+
+
 async def parse_channel(client, channel_username, status_msg: Message):
     # Копим по одному человеку, а не по одному комментарию:
     # user_id -> {"row": строка, "count": сколько комментов, "first"/"last": даты}
@@ -494,7 +538,10 @@ async def parse_channel(client, channel_username, status_msg: Message):
     rows = []          # заполняется в самом конце, из people
 
     try:
-        channel = await client.get_entity(channel_username)
+        channel, channel_username = await resolve_channel(client, channel_username)
+    except PermissionError as e:
+        await status_msg.answer(f"❌ {channel_username}: {e}")
+        return rows
     except ChannelPrivateError:
         await status_msg.answer(f"❌ Канал @{channel_username} закрытый или нет доступа")
         return rows
@@ -515,22 +562,30 @@ async def parse_channel(client, channel_username, status_msg: Message):
             interrupted = await parse_via_group(
                 client, channel_username, channel, group, status_msg, people, seen_msg
             )
-            if interrupted:
-                logger.warning(
-                    f"@{channel_username}: обсуждение пройдено не полностью, "
-                    f"людей {len(people)}"
+            if interrupted and not people:
+                # группа обсуждений недоступна (например, закрытая и аккаунт в ней не состоит) —
+                # пробуем медленный способ через сам канал
+                logger.info(
+                    f"@{channel_username}: группа обсуждений не читается, "
+                    f"иду медленным способом по постам"
                 )
-            for rec in people.values():
-                row = rec["row"]
-                row["Кол-во комментариев"] = rec["count"]
-                row["Дата первого комментария"] = (
-                    rec["first"].astimezone(LOCAL_TZ).strftime("%d/%m/%Y %H:%M:%S")
-                    if rec["first"] else ""
-                )
-                rows.append(row)
-            people.clear()
-            seen_msg.clear()
-            return rows
+            else:
+                if interrupted:
+                    logger.warning(
+                        f"@{channel_username}: обсуждение пройдено не полностью, "
+                        f"людей {len(people)}"
+                    )
+                for rec in people.values():
+                    row = rec["row"]
+                    row["Кол-во комментариев"] = rec["count"]
+                    row["Дата первого комментария"] = (
+                        rec["first"].astimezone(LOCAL_TZ).strftime("%d/%m/%Y %H:%M:%S")
+                        if rec["first"] else ""
+                    )
+                    rows.append(row)
+                people.clear()
+                seen_msg.clear()
+                return rows
         else:
             logger.info(
                 f"@{channel_username}: группы обсуждений нет, "
@@ -871,18 +926,34 @@ async def handle_2fa(message: Message, state: FSMContext):
 
 
 def normalize_channel(line: str) -> str:
-    """Приводит строку к юзернейму канала: убирает ссылку, @, слэши и хвосты."""
+    """Приводит строку к юзернейму канала: убирает ссылку, @, слэши и хвосты.
+    Инвайт-ссылки (t.me/+hash, t.me/joinchat/hash) возвращает как '+hash',
+    ссылки на закрытые каналы (t.me/c/123456/78) — как 'c/123456'."""
     s = line.strip()
     for prefix in ("https://", "http://"):
         if s.startswith(prefix):
             s = s[len(prefix):]
-    for prefix in ("t.me/", "telegram.me/", "www.t.me/"):
+    for prefix in ("t.me/", "telegram.me/", "www.t.me/", "telegram.dog/"):
         if s.startswith(prefix):
             s = s[len(prefix):]
             break
+    s = s.split("?")[0].strip()
+
+    # t.me/joinchat/HASH -> +HASH
+    if s.startswith("joinchat/"):
+        return "+" + s.split("/")[1].strip()
+    # t.me/+HASH
+    if s.startswith("+"):
+        return "+" + s[1:].split("/")[0].strip()
+    # t.me/c/123456/78 -> c/123456
+    if s.startswith("c/"):
+        parts = s.split("/")
+        if len(parts) >= 2 and parts[1].isdigit():
+            return f"c/{parts[1]}"
+
     s = s.lstrip("@").strip("/")
-    # отрезаем возможные хвосты вида channel/123 или channel?start=...
-    s = s.split("?")[0].split("/")[0]
+    # отрезаем возможные хвосты вида channel/123
+    s = s.split("/")[0]
     return s.strip()
 
 
